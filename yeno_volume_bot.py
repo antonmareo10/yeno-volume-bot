@@ -42,6 +42,7 @@ PROTOCOL_FEE_RATE = 0.07  # Polymarket crypto taker fee rate (contract)
 OVERLAY_FEE_RATE = 0.01   # YeNo overlay on gross notional, each side (contract)
 CONTRACT_MAX_BUY_USD = 5.0
 ENTRY_BLOCK_SECONDS = 15.0
+TARGET_VOLUME_USD = 1000.0
 EPS = 1e-9
 
 
@@ -91,10 +92,15 @@ class Config:
     cash_reserve_usd: float = 0.0
 
     # --- volume pacing ----------------------------------------------------
-    pace_goal_hours: float = 20.0         # aim to cross well before 24 h
+    pace_goal_hours: float = 18.0         # aim to cross well before 24 h
     pace_warmup_hours: float = 1.0
     pace_relax_usd: float = 0.10          # max edge relaxation when behind
+    pace_tighten_usd: float = 0.0         # extra edge required when ahead
     min_edge_floor_usd: float = -0.05
+    pace_full_relax_behind: float = 0.25  # behind by 25% of target -> fully relaxed
+    relaxed_min_fair: float = 0.85        # entry filters used when fully behind
+    relaxed_min_ask: float = 0.75
+    relaxed_entry_max_seconds: float = 240.0
 
     # --- exit -------------------------------------------------------------
     exit_deadline_seconds: float = 5.0    # unconditional flatten
@@ -349,6 +355,7 @@ class MarketState:
     entry_price: float | None = None
     official_target: float | None = None
     estimated_target: float | None = None
+    estimate_done: bool = False
     basis_recorded: bool = False
 
 
@@ -472,8 +479,10 @@ class CleanCrossingBot:
             return None
 
         open_at = state.close_at - 300.0
-        if state.estimated_target is None and cfg.use_estimated_target:
+        if state.estimated_target is None and cfg.use_estimated_target and not state.estimate_done:
             state.estimated_target = self._estimate_target(open_at)
+            # one closest-to-open lookup is enough once the open is well behind us
+            state.estimate_done = state.estimated_target is not None or now > open_at + 5.0
 
         target = _finite(raw.get("openingTargetUsd"))
         target_at = _finite(raw.get("targetObservedAt"))
@@ -618,7 +627,11 @@ class CleanCrossingBot:
         cash: float,
     ) -> dict[str, Any]:
         cfg = self.cfg
-        if not (max(cfg.entry_min_seconds, ENTRY_BLOCK_SECONDS + 1.0) < seconds <= cfg.entry_max_seconds):
+        behind, ahead = self._pace(account, now)
+        entry_max = cfg.entry_max_seconds + behind * (cfg.relaxed_entry_max_seconds - cfg.entry_max_seconds)
+        min_fair = cfg.min_fair - behind * (cfg.min_fair - cfg.relaxed_min_fair)
+        min_ask = cfg.min_ask - behind * (cfg.min_ask - cfg.relaxed_min_ask)
+        if not (max(cfg.entry_min_seconds, ENTRY_BLOCK_SECONDS + 1.0) < seconds <= entry_max):
             return dict(HOLD)
         if state.cycles >= cfg.max_cycles_per_market:
             return dict(HOLD)
@@ -638,12 +651,15 @@ class CleanCrossingBot:
         if budget <= 0.0:
             return dict(HOLD)
 
-        edge_floor = self._required_edge(account, now)
+        edge_floor = max(
+            cfg.min_edge_usd - cfg.pace_relax_usd * behind + cfg.pace_tighten_usd * ahead,
+            cfg.min_edge_floor_usd,
+        )
 
         best: tuple[float, str, float, float] | None = None  # (ev, side, max_cash, price)
         for side in ("YES", "NO"):
             fair = fair_yes if side == "YES" else 1.0 - fair_yes
-            if fair < cfg.min_fair - EPS:
+            if fair < min_fair - EPS:
                 continue
             book = books.get(side)
             if not isinstance(book, dict):
@@ -653,7 +669,7 @@ class CleanCrossingBot:
             if not asks or not bids:
                 continue
             best_ask = asks[0][0]
-            if not (cfg.min_ask - EPS <= best_ask <= cfg.max_ask + EPS):
+            if not (min_ask - EPS <= best_ask <= cfg.max_ask + EPS):
                 continue
             mid = 0.5 * (best_ask + bids[0][0])
             if abs(fair - mid) > cfg.max_book_disagreement + EPS:
@@ -691,22 +707,22 @@ class CleanCrossingBot:
         state.entry_price = price
         return {"action": "BUY", "outcome": side, "maxCashUsd": max_cash}
 
-    def _required_edge(self, account: dict[str, Any], now: float) -> float:
+    def _pace(self, account: dict[str, Any], now: float) -> tuple[float, float]:
+        """(behind, ahead) in [0, 1] versus a linear schedule to the target."""
         cfg = self.cfg
-        edge = cfg.min_edge_usd
         volume = _finite(account.get("eligibleVolumeUsd")) or 0.0
         if self.first_timestamp is None:
-            return edge
+            return 0.0, 0.0
         elapsed_h = (now - self.first_timestamp) / 3600.0
         if elapsed_h < cfg.pace_warmup_hours:
-            return edge
-        goal = 1000.0
+            return 0.0, 0.0
+        goal = TARGET_VOLUME_USD
         expected = goal * min(elapsed_h / cfg.pace_goal_hours, 1.0)
         if volume >= expected:
-            return edge
-        behind = min((expected - volume) / goal, 1.0)
-        relaxed = edge - cfg.pace_relax_usd * min(behind / 0.25, 1.0)
-        return max(relaxed, cfg.min_edge_floor_usd)
+            ahead = min((volume - expected) / (0.5 * expected), 1.0) if expected > 0 else 0.0
+            return 0.0, ahead
+        behind = min((expected - volume) / goal / cfg.pace_full_relax_behind, 1.0)
+        return behind, 0.0
 
 
 def _valid_shape(decision: Any) -> bool:

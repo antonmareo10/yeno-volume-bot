@@ -39,3 +39,24 @@ def house_factory(kit: Path) -> Factory:
 def starter_factory(kit: Path) -> Factory:
     module = _load(kit / "yeno_competition_starter_bot.py", "yeno_starter_bot")
     return lambda: module.decide
+
+
+def http_factory(url: str, timeout: float = 1.0) -> Factory:
+    """Drive any /decide endpoint over HTTP (the way the official run does)."""
+    import json
+    import urllib.request
+
+    def factory():
+        def decide(observation: dict[str, Any]) -> Any:
+            request = urllib.request.Request(
+                url,
+                data=json.dumps(observation).encode(),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read())
+
+        return decide
+
+    return factory

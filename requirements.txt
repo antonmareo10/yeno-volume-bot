@@ -1,0 +1,2 @@
+# Clean Crossing uses only the Python standard library (Python >= 3.9).
+# Nothing to install; this file exists so `pip install -r requirements.txt` is a no-op.

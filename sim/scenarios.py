@@ -19,7 +19,10 @@ def base() -> Scenario:
 
 
 def calibrated() -> Scenario:
-    return Scenario(name="calibrated", mm_lag_s=(0.5, 2.0), mm_vol_mult=1.0)
+    # sluggish market maker: quotes chase the (lagged) fair value with a 10 s
+    # time constant.  Closest of the tested worlds to the published House Bot
+    # v1 development numbers (it still does somewhat worse here).
+    return Scenario(name="calibrated", mm_lag_s=(0.5, 2.0), mm_vol_mult=1.0, mm_smoothing_s=10.0)
 
 
 def SCENARIO(name: str, **changes) -> Scenario:  # noqa: N802 - tiny helper
@@ -29,6 +32,10 @@ def SCENARIO(name: str, **changes) -> Scenario:  # noqa: N802 - tiny helper
 SCENARIOS = {
     "efficient": efficient,
     "base": base,
+    "lag-only": lambda: Scenario(name="lag-only", mm_lag_s=(0.5, 2.0)),
+    "modest": lambda: Scenario(name="modest", mm_lag_s=(0.5, 2.0), mm_vol_mult=1.15),
+    "static-bias": lambda: Scenario(name="static-bias", mm_lag_s=(0.5, 2.0), mm_vol_mult=1.3),
+    "mild-sluggish": lambda: Scenario(name="mild-sluggish", mm_lag_s=(0.5, 2.0), mm_smoothing_s=4.0),
     "calibrated": calibrated,
     "stress-2c": lambda: SCENARIO("stress-2c", adverse_fill_usd=0.02),
     "stress-1c": lambda: SCENARIO("stress-1c", adverse_fill_usd=0.01),

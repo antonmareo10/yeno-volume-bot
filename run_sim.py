@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:  # works under `python -I` too
     sys.path.insert(0, str(ROOT))
 
-from sim.bots import clean_factory, house_factory, starter_factory  # noqa: E402
+from sim.bots import clean_factory, house_factory, http_factory, starter_factory  # noqa: E402
 from sim.evaluator import PaperEvaluator  # noqa: E402
 from sim.scenarios import SCENARIOS  # noqa: E402
 
@@ -92,6 +92,7 @@ def main() -> None:
     parser.add_argument("--kit", type=Path, help="folder with the official house/starter bot files")
     parser.add_argument("--config", default="{}", help="JSON overrides for the Clean Crossing config")
     parser.add_argument("--hours", type=float, default=None)
+    parser.add_argument("--url", help="for --bots http: the /decide endpoint to drive over HTTP")
     parser.add_argument("--out", type=Path)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
@@ -110,6 +111,10 @@ def main() -> None:
             if args.kit is None:
                 parser.error("--kit is required for the house bot")
             factories[name] = house_factory(args.kit)
+        elif name == "http":
+            if not args.url:
+                parser.error("--url is required for the http bot")
+            factories[name] = http_factory(args.url)
         elif name == "starter":
             if args.kit is None:
                 parser.error("--kit is required for the starter bot")
