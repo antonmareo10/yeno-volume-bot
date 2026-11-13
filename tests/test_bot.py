@@ -287,6 +287,38 @@ class ExitTests(unittest.TestCase):
             self.assertNotEqual(bot.decide(observation(**{"market.secondsToClose": seconds}))["action"], "SELL")
 
 
+class PacingTests(unittest.TestCase):
+    def _behind_obs(self, cash):
+        return observation(**{
+            "account.cashUsd": cash,
+            "account.eligibleVolumeUsd": 100,
+            "reference.btcMidUsd": 80_444.946 + 68.0,  # fair ~0.83 with the prior sigma
+            "books.YES.asks": [[0.78, 100]],
+            "books.YES.bids": [[0.77, 100]],
+            "books.NO.asks": [[0.23, 100]],
+            "books.NO.bids": [[0.22, 100]],
+        })
+
+    def _bot_twelve_hours_in(self):
+        bot = ccb.CleanCrossingBot()
+        bot.first_timestamp = NOW - 12 * 3600.0
+        return bot
+
+    def test_on_schedule_keeps_strict_filters(self):
+        bot = ccb.CleanCrossingBot()
+        self.assertEqual(bot.decide(self._behind_obs(25.0))["action"], "HOLD")
+
+    def test_behind_without_cushion_stays_selective(self):
+        self.assertEqual(self._bot_twelve_hours_in().decide(self._behind_obs(10.0))["action"], "HOLD")
+
+    def test_behind_with_cushion_accepts_thinner_setups(self):
+        obs = self._behind_obs(25.0)
+        decision = self._bot_twelve_hours_in().decide(obs)
+        assert_valid(self, decision, obs)
+        self.assertEqual(decision["action"], "BUY")
+        self.assertEqual(decision["outcome"], "YES")
+
+
 class CalibratorTests(unittest.TestCase):
     def _simulate(self, true_k: float, markets: int = 300, seed: int = 3) -> float:
         cfg = ccb.Config()

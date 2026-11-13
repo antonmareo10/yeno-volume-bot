@@ -101,6 +101,13 @@ class Config:
     relaxed_min_fair: float = 0.85        # entry filters used when fully behind
     relaxed_min_ask: float = 0.75
     relaxed_entry_max_seconds: float = 240.0
+    # extra relaxation only when behind AND sitting on a cash cushion: spending a
+    # little of a large cushion is cheap insurance against missing the target
+    cushion_cash_usd: float = 14.0        # cushion starts above this cash...
+    cushion_full_usd: float = 6.0         # ...and is full this many dollars above it
+    cushion_relax_usd: float = 0.10
+    cushion_min_fair: float = 0.80
+    cushion_min_ask: float = 0.70
 
     # --- exit -------------------------------------------------------------
     exit_deadline_seconds: float = 5.0    # unconditional flatten
@@ -544,10 +551,10 @@ class CleanCrossingBot:
         var = sum((x - mean) ** 2 for x in samples) / max(len(samples) - 1, 1)
         return math.sqrt(base ** 2 + mean ** 2 + var)
 
-    def _fair_yes(self, ref: Reference | None, seconds: float, now_lag: float = 0.0) -> float | None:
+    def _fair_yes(self, ref: Reference | None, seconds: float) -> float | None:
         if ref is None or ref.target is None:
             return None
-        horizon = max(seconds + now_lag, 0.25)
+        horizon = max(seconds, 0.25)
         multiplier = self.calibrator.multiplier if self.cfg.calibrate else self.cfg.sigma_safety
         sigma = self.vol.sigma() * multiplier
         sd = math.sqrt(sigma * sigma * horizon + self._basis_sd(ref) ** 2)
@@ -628,9 +635,12 @@ class CleanCrossingBot:
     ) -> dict[str, Any]:
         cfg = self.cfg
         behind, ahead = self._pace(account, now)
+        cushion = behind * min(max((cash - cfg.cushion_cash_usd) / cfg.cushion_full_usd, 0.0), 1.0)
         entry_max = cfg.entry_max_seconds + behind * (cfg.relaxed_entry_max_seconds - cfg.entry_max_seconds)
         min_fair = cfg.min_fair - behind * (cfg.min_fair - cfg.relaxed_min_fair)
+        min_fair -= cushion * (cfg.relaxed_min_fair - cfg.cushion_min_fair)
         min_ask = cfg.min_ask - behind * (cfg.min_ask - cfg.relaxed_min_ask)
+        min_ask -= cushion * (cfg.relaxed_min_ask - cfg.cushion_min_ask)
         if not (max(cfg.entry_min_seconds, ENTRY_BLOCK_SECONDS + 1.0) < seconds <= entry_max):
             return dict(HOLD)
         if state.cycles >= cfg.max_cycles_per_market:
@@ -654,7 +664,7 @@ class CleanCrossingBot:
         edge_floor = max(
             cfg.min_edge_usd - cfg.pace_relax_usd * behind + cfg.pace_tighten_usd * ahead,
             cfg.min_edge_floor_usd,
-        )
+        ) - cfg.cushion_relax_usd * cushion
 
         best: tuple[float, str, float, float] | None = None  # (ev, side, max_cash, price)
         for side in ("YES", "NO"):
